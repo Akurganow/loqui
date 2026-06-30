@@ -1,48 +1,95 @@
 import Foundation
 import Security
+import Synchronization
 
-/// Reads the Anthropic key from Keychain, with an environment-variable fallback
-/// for local development. The key value is returned to `AnthropicCleaner` only.
-public struct KeychainAnthropicKeyProvider: AnthropicKeyProvider {
+/// Supplies the Anthropic key from Keychain, caching the secret in memory after
+/// the first successful read.
+public final class KeychainAnthropicKeyProvider: AnthropicKeyProvider {
     public enum StoreError: Error, Sendable {
         case emptyKey
         case keychain(OSStatus)
     }
 
-    private let service: String
-    private let account: String
     private let environmentKey: String
+    private let readKey: @Sendable () -> String?
+    private let keyExists: @Sendable () -> Bool
+    private let writeKey: @Sendable (String) throws -> Void
+    private let cachedKey = Mutex<String?>(nil)
 
-    public init(
+    public convenience init(
         service: String = "loqui",
         account: String = "anthropic-api-key",
         environmentKey: String = "ANTHROPIC_API_KEY"
     ) {
-        self.service = service
-        self.account = account
+        self.init(
+            environmentKey: environmentKey,
+            readKey: { Self.keychainKey(service: service, account: account) },
+            keyExists: { Self.keychainItemExists(service: service, account: account) },
+            writeKey: { try Self.store($0, service: service, account: account) }
+        )
+    }
+
+    @preconcurrency
+    public init(
+        environmentKey: String = "ANTHROPIC_API_KEY",
+        readKey: @escaping @Sendable () -> String?,
+        keyExists: @escaping @Sendable () -> Bool,
+        writeKey: @escaping @Sendable (String) throws -> Void
+    ) {
         self.environmentKey = environmentKey
+        self.readKey = readKey
+        self.keyExists = keyExists
+        self.writeKey = writeKey
     }
 
     public func apiKey() throws -> String {
-        if let key = keychainKey() ?? environmentKeyValue(), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let key = cachedKey.withLock({ $0 }) {
+            return key
+        }
+        if let key = Self.normalized(readKey() ?? environmentKeyValue()) {
+            cachedKey.withLock { $0 = key }
             return key
         }
         throw CleanupError.missingKey
     }
 
+    public func preload() throws {
+        _ = try apiKey()
+    }
+
     public func hasConfiguredKey() -> Bool {
-        if keychainItemExists() {
+        if cachedKey.withLock({ $0 != nil }) {
             return true
         }
-        return environmentKeyValue()?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        if keyExists() {
+            return true
+        }
+        return Self.normalized(environmentKeyValue()) != nil
     }
 
     public func store(_ key: String) throws {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        guard let trimmed = Self.normalized(key) else {
             throw StoreError.emptyKey
         }
-        let data = Data(trimmed.utf8)
+        try writeKey(trimmed)
+        cachedKey.withLock { $0 = trimmed }
+    }
+
+    private func environmentKeyValue() -> String? {
+        ProcessInfo.processInfo.environment[environmentKey]
+    }
+
+    private static func normalized(_ key: String?) -> String? {
+        guard let trimmed = key?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func store(_ key: String, service: String, account: String) throws {
+        let data = Data(key.utf8)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -70,7 +117,7 @@ public struct KeychainAnthropicKeyProvider: AnthropicKeyProvider {
         throw StoreError.keychain(status)
     }
 
-    private func keychainKey() -> String? {
+    private static func keychainKey(service: String, account: String) -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -87,7 +134,7 @@ public struct KeychainAnthropicKeyProvider: AnthropicKeyProvider {
         return String(data: data, encoding: .utf8)
     }
 
-    private func keychainItemExists() -> Bool {
+    private static func keychainItemExists(service: String, account: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -97,9 +144,5 @@ public struct KeychainAnthropicKeyProvider: AnthropicKeyProvider {
         ]
         var item: CFTypeRef?
         return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
-    }
-
-    private func environmentKeyValue() -> String? {
-        ProcessInfo.processInfo.environment[environmentKey]
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 import LoquiCore
@@ -190,6 +191,66 @@ struct AnthropicCleanerTests {
 
         #expect(!captured.isEmpty,
                 "the cleaner must emit ≥1 coarse operational log line on a normal run, so the sentinel sweep is non-vacuous")
+    }
+
+    /// A process should ask Keychain for the secret at most once; every later
+    /// cleanup uses the in-memory copy.
+    /// Stated sensitivity: remove the provider cache -> two `clean` calls invoke
+    /// the secret reader twice -> RED.
+    @Test
+    func keyProviderCachesSecretAcrossCleanupCalls() async throws {
+        let reads = Mutex<Int>(0)
+        let keyProvider = KeychainAnthropicKeyProvider(
+            readKey: {
+                reads.withLock { $0 += 1 }
+                return "synthetic-key"
+            },
+            keyExists: { true },
+            writeKey: { _ in }
+        )
+        let first = StubScenario(response: .http(status: 200, headers: [:], body: Self.successBody(text: "one")))
+        let second = StubScenario(response: .http(status: 200, headers: [:], body: Self.successBody(text: "two")))
+
+        _ = try await AnthropicCleaner(
+            session: first.makeSession(),
+            keyProvider: keyProvider,
+            promptBuilder: PromptBuilder(maxVocabularyTerms: 3)
+        ).clean("raw one", config: Self.config, context: Self.context)
+        _ = try await AnthropicCleaner(
+            session: second.makeSession(),
+            keyProvider: keyProvider,
+            promptBuilder: PromptBuilder(maxVocabularyTerms: 3)
+        ).clean("raw two", config: Self.config, context: Self.context)
+
+        #expect(reads.withLock { $0 } == 1,
+                "one process-scoped key provider must read the Keychain secret once")
+    }
+
+    /// Updating the key is rare but supported: save to durable storage and replace
+    /// the in-memory key immediately.
+    /// Stated sensitivity: forget to update the cache in `store` -> `apiKey()`
+    /// calls the secret reader or returns the old key -> RED.
+    @Test
+    func storingKeyUpdatesMemoryCacheWithoutSecretRead() throws {
+        let reads = Mutex<Int>(0)
+        let writes = Mutex<[String]>([])
+        let keyProvider = KeychainAnthropicKeyProvider(
+            readKey: {
+                reads.withLock { $0 += 1 }
+                return "old-key"
+            },
+            keyExists: { true },
+            writeKey: { key in writes.withLock { $0.append(key) } }
+        )
+
+        try keyProvider.store(" new-key \n")
+
+        #expect(try keyProvider.apiKey() == "new-key",
+                "the updated key must be available from memory immediately")
+        #expect(reads.withLock { $0 } == 0,
+                "reading after store must not re-open Keychain")
+        #expect(writes.withLock { $0 } == ["new-key"],
+                "durable storage receives the trimmed replacement key")
     }
 
     // MARK: - Helper: assert `clean` throws a CleanupError matching `check`

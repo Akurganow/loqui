@@ -58,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 logger.info("onboarding pending")
                 return
             }
+            try live.keyProvider.preload()
             live.hotkeyMonitor.onTrigger = { [weak self, orchestrator = live.orchestrator] phase in
                 Task {
                     switch phase {

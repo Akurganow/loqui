@@ -57,7 +57,7 @@ struct AppRuntimeSourceGuardTests {
     }
 
     @Test
-    func appStartupChecksKeyPresenceWithoutDecryptingSecret() throws {
+    func readinessCheckUsesKeyPresenceWithoutDecryptingSecret() throws {
         let composition = try Self.code("Sources/loqui/AppComposition.swift")
         let keyProvider = try Self.code("Sources/LoquiCore/Cleaner/KeychainAnthropicKeyProvider.swift")
         let makeLiveBody = try Self.functionBody(named: "makeLive", in: composition)
@@ -66,7 +66,7 @@ struct AppRuntimeSourceGuardTests {
 
         #expect(Self.containsStatement(#"hasKey:\s*keyProvider\.hasConfiguredKey\(\),?"#, in: makeLiveBody))
         #expect(!Self.withoutStringLiterals(makeLiveBody).contains("keyProvider.apiKey()"))
-        #expect(hasConfiguredKeyBody.contains("keychainItemExists()"))
+        #expect(hasConfiguredKeyBody.contains("keyExists()"))
         for forbidden in ["apiKey()", "keychainKey()", "kSecReturnData"] {
             #expect(!Self.withoutStringLiterals(hasConfiguredKeyBody).contains(forbidden),
                     "hasConfiguredKey must not read or decrypt the stored secret via \(forbidden)")
@@ -78,6 +78,18 @@ struct AppRuntimeSourceGuardTests {
             #expect(!Self.withoutStringLiterals(keychainItemExistsBody).contains(forbidden),
                     "keychainItemExists must stay attributes-only and must not read the secret via \(forbidden)")
         }
+    }
+
+    @Test
+    func readyPipelinePreloadsKeyBeforeHotkeyStart() throws {
+        let delegate = try Self.code("Sources/loqui/AppDelegate.swift")
+        let startPipelineBody = try Self.functionBody(named: "startPipeline", in: delegate)
+
+        #expect(Self.containsInOrder([
+            "guard live.onboardingSteps == [.ready] else",
+            "try live.keyProvider.preload()",
+            "try live.hotkeyMonitor.start()",
+        ], in: startPipelineBody))
     }
 
     @Test
