@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-import LoquiCore
+@testable import LoquiCore
 
 // Epic 09c — build-only adapter surface. CI must prove the adapter exists,
 // conforms to `Transcriber`, carries a config-driven multilingual model string,
@@ -22,6 +22,29 @@ struct WhisperKitTranscriberTests {
         #expect(config.model == "large-v3-v20240930_turbo_632MB")
         #expect(!config.model.hasSuffix(".en"))
         #expect(config.language == .auto)
+    }
+
+    /// Stated sensitivity: leaving auto-detection out of the actual decode
+    /// policy makes `.auto` fall back to WhisperKit's English prefill default.
+    @Test
+    func decodingPolicyMapsAutoToLanguageDetection() {
+        let policy = WhisperKitTranscriber.Configuration(language: .auto).decodingPolicy
+
+        #expect(policy.languageCode == nil)
+        #expect(policy.detectLanguage)
+    }
+
+    /// Stated sensitivity: enabling auto-detection for an explicit language
+    /// would let WhisperKit ignore the user's configured source-language choice.
+    @Test
+    func decodingPolicyDisablesDetectionForExplicitLanguages() {
+        let russian = WhisperKitTranscriber.Configuration(language: .ru).decodingPolicy
+        let english = WhisperKitTranscriber.Configuration(language: .en).decodingPolicy
+
+        #expect(russian.languageCode == "ru")
+        #expect(!russian.detectLanguage)
+        #expect(english.languageCode == "en")
+        #expect(!english.detectLanguage)
     }
 
     /// Stated sensitivity: claiming a real bias field before the L4 SDK check

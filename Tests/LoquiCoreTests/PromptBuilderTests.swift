@@ -112,4 +112,26 @@ struct PromptBuilderTests {
         #expect(!systemText.contains("<output>\(raw)</output>"),
                 "the prompt must not teach byte-identical output for this case")
     }
+
+    /// Stated sensitivity: weakening the language boundary lets a cleaner turn
+    /// Russian dictation into English prose instead of preserving source language.
+    @Test
+    func promptExplicitlyForbidsTranslation() {
+        let request = PromptBuilder(maxVocabularyTerms: 3)
+            .build(
+                raw: "прибери мусор",
+                config: CleanupConfig(writingStyle: .casual, language: .ru),
+                context: PersonalizationContext(vocabulary: [])
+            )
+        let systemText = request.system.map(\.text).joined(separator: "\n")
+
+        #expect(systemText.contains("Never translate"))
+        #expect(systemText.contains("Output language must match the transcript language"))
+        #expect(systemText.contains("<transcript>прибери мусор</transcript>"))
+        #expect(systemText.contains("<output>Прибери мусор.</output>"))
+        #expect(systemText.contains("<transcript>запусти swift test и открой pull request</transcript>"))
+        #expect(systemText.contains("<output>Запусти swift test и открой pull request.</output>"))
+        #expect(!systemText.contains("<output>Clean up the trash.</output>"))
+        #expect(!systemText.contains("<output>Run swift test and open a pull request.</output>"))
+    }
 }

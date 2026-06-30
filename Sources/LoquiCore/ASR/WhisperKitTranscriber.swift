@@ -2,6 +2,11 @@ import AVFoundation
 import Foundation
 import WhisperKit
 
+struct WhisperKitDecodingPolicy: Equatable, Sendable {
+    let languageCode: String?
+    let detectLanguage: Bool
+}
+
 public actor WhisperKitTranscriber: Transcriber {
     public struct Configuration: Equatable, Sendable {
         public static let defaults = Configuration()
@@ -111,9 +116,11 @@ public actor WhisperKitTranscriber: Transcriber {
 
     private func decodingOptions(for engine: WhisperKit, biasTerms: [Term]) -> DecodingOptions {
         let promptTokens = biasPromptTokens(for: engine, biasTerms: biasTerms)
+        let policy = configuration.decodingPolicy
         return DecodingOptions(
             task: .transcribe,
-            language: configuration.language.whisperKitLanguageCode,
+            language: policy.languageCode,
+            detectLanguage: policy.detectLanguage,
             promptTokens: promptTokens
         )
     }
@@ -125,6 +132,15 @@ public actor WhisperKitTranscriber: Transcriber {
         return WhisperKitBiasPromptBuilder.promptTokens(for: biasTerms) { prompt in
             tokenizer.encode(text: prompt)
         }
+    }
+}
+
+extension WhisperKitTranscriber.Configuration {
+    var decodingPolicy: WhisperKitDecodingPolicy {
+        WhisperKitDecodingPolicy(
+            languageCode: language.whisperKitLanguageCode,
+            detectLanguage: language == .auto
+        )
     }
 }
 
